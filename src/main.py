@@ -4,6 +4,8 @@ from datetime import datetime
 from PIL import Image
 import pandas as pd
 import json
+import onnxruntime as ort
+import numpy as np
 
 class Settings:
     def __init__(self):
@@ -72,12 +74,41 @@ class AnalysisView(ft.View):
     def __init__(self, route="/analysis"):
         super().__init__(route=route)
         self.history_file = "storage/history.csv"
+        self.model_path = "storage/model.onnx"
+        
+        # Initialize ONNX Runtime session
+        if os.path.exists(self.model_path):
+            self.ort_session = ort.InferenceSession(self.model_path)
+        else:
+            self.ort_session = None
+            print(f"Warning: ONNX model not found at {self.model_path}")
+        
         os.makedirs("storage/thumbnails", exist_ok=True)
         if not os.path.exists(self.history_file):
-            pd.DataFrame(columns=["date", "filename", "width", "height", "thumbnail"]).to_csv(self.history_file, index=False)
+            pd.DataFrame(columns=["date", "filename", "width", "height", "thumbnail", "inference_value"]).to_csv(self.history_file, index=False)
         
         self.pick_files_dialog = ft.FilePicker(
             on_result=self.process_image
+        )
+        
+        # Success message container
+        self.success_container = ft.Container(
+            visible=False,
+            bgcolor=ft.Colors.GREEN_100,
+            border_radius=10,
+            padding=10,
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.GREEN),
+                    ft.Text("", color=ft.Colors.GREEN_900, size=16, weight=ft.FontWeight.W_500),
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE,
+                        icon_color=ft.Colors.GREEN_900,
+                        on_click=lambda _: self.hide_success_message()
+                    )
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            )
         )
         
         self.controls = [
@@ -93,6 +124,7 @@ class AnalysisView(ft.View):
                         ],
                         alignment=ft.MainAxisAlignment.START,
                     ),
+                    self.success_container,
                     ft.ElevatedButton(
                         "Select Image",
                         icon=ft.Icons.IMAGE,
@@ -107,6 +139,38 @@ class AnalysisView(ft.View):
             )
         ]
 
+    def run_inference(self, img):
+        if self.ort_session is None:
+            return None
+            
+        # Preprocess image - assuming model expects (1, 3, 224, 224) input
+        img_resized = img.convert("RGB").resize((224, 224))
+        img_array = np.array(img_resized).astype(np.float32) / 255.0  # shape (224, 224, 3)
+        img_array = np.transpose(img_array, (2, 0, 1))  # shape (3, 224, 224)
+        img_array = np.expand_dims(img_array, axis=0)   # shape (1, 3, 224, 224)
+        input_name = self.ort_session.get_inputs()[0].name
+        
+        # Run inference
+        try:
+            ort_inputs = {input_name: img_array}
+            ort_outs = self.ort_session.run(None, ort_inputs)
+            return float(ort_outs[0][0])  # Assuming single output value
+        except Exception as e:
+            print(f"Inference error: {e}")
+            return None
+
+    def show_success_message(self, width, height, inference_value=None):
+        message = f"Image analyzed successfully: {width}x{height}"
+        if inference_value is not None:
+            message += f"\nInference value: {inference_value:.4f}"
+        self.success_container.content.controls[1].value = message
+        self.success_container.visible = True
+        self.update()
+        
+    def hide_success_message(self):
+        self.success_container.visible = False
+        self.update()
+
     def process_image(self, e: ft.FilePickerResultEvent):
         if not e.files:
             return
@@ -114,6 +178,9 @@ class AnalysisView(ft.View):
         file_path = e.files[0].path
         with Image.open(file_path) as img:
             width, height = img.size
+            
+            # Run inference
+            inference_value = self.run_inference(img)
             
             # Create thumbnail
             thumbnail_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
@@ -128,15 +195,14 @@ class AnalysisView(ft.View):
                 "filename": os.path.basename(file_path),
                 "width": width,
                 "height": height,
-                "thumbnail": thumbnail_name
+                "thumbnail": thumbnail_name,
+                "inference_value": inference_value if inference_value is not None else "N/A"
             }
             df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             df.to_csv(self.history_file, index=False)
 
             # Show success message
-            self.page.snack_bar = ft.SnackBar(content=ft.Text(f"Image analyzed: {width}x{height}"))
-            self.page.snack_bar.open = True
-            self.page.update()
+            self.show_success_message(width, height, inference_value)
 
 class HistoryView(ft.View):
     def __init__(self, route="/history"):
@@ -149,6 +215,7 @@ class HistoryView(ft.View):
         if os.path.exists(self.history_file):
             df = pd.read_csv(self.history_file)
             for _, row in df.iterrows():
+                inference_text = f"Inference: {row['inference_value']:.4f}" if row['inference_value'] != "N/A" else "No inference"
                 history_items.append(
                     ft.Container(
                         content=ft.Row(
@@ -163,6 +230,7 @@ class HistoryView(ft.View):
                                     controls=[
                                         ft.Text(row["filename"]),
                                         ft.Text(f"Resolution: {row['width']}x{row['height']}"),
+                                        ft.Text(inference_text),
                                         ft.Text(row["date"], size=12),
                                     ],
                                 ),
