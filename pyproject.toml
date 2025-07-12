@@ -9,10 +9,10 @@ authors = [
 ]
 dependencies = [
   "flet==0.28.3",
-  "pillow>=10.0.0",
-  "pandas>=2.0.0",
-  "onnxruntime>=1.17.0",
-  "numpy>=1.24.0"
+  "pillow==10.4.0",
+  "pandas>=2.2.2",
+  "numpy==1.26.4",
+  "opencv-python==4.10.0.84"
 ]
 
 [tool.flet]
@@ -32,6 +32,10 @@ copyright = "Copyright (C) 2025 by Flet"
 
 [tool.flet.app]
 path = "src"
+
+[tool.flet.compile]
+app = true
+packages = false
 
 [tool.uv]
 dev-dependencies = [

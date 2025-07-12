@@ -4,7 +4,7 @@ from datetime import datetime
 from PIL import Image
 import pandas as pd
 import json
-import onnxruntime as ort
+import cv2
 import numpy as np
 
 class Settings:
@@ -76,11 +76,11 @@ class AnalysisView(ft.View):
         self.history_file = "storage/history.csv"
         self.model_path = "storage/model.onnx"
         
-        # Initialize ONNX Runtime session
+        # Initialize OpenCV DNN model
         if os.path.exists(self.model_path):
-            self.ort_session = ort.InferenceSession(self.model_path)
+            self.net = cv2.dnn.readNetFromONNX(self.model_path)
         else:
-            self.ort_session = None
+            self.net = None
             print(f"Warning: ONNX model not found at {self.model_path}")
         
         os.makedirs("storage/thumbnails", exist_ok=True)
@@ -140,29 +140,30 @@ class AnalysisView(ft.View):
         ]
 
     def run_inference(self, img):
-        if self.ort_session is None:
-            return None
+        if self.net is None:
+            return 'no net'
             
         # Preprocess image - assuming model expects (1, 3, 224, 224) input
         img_resized = img.convert("RGB").resize((224, 224))
-        img_array = np.array(img_resized).astype(np.float32) / 255.0  # shape (224, 224, 3)
-        img_array = np.transpose(img_array, (2, 0, 1))  # shape (3, 224, 224)
-        img_array = np.expand_dims(img_array, axis=0)   # shape (1, 3, 224, 224)
-        input_name = self.ort_session.get_inputs()[0].name
+        img_array = np.array(img_resized).astype(np.float32)
+        
+        # Convert to blob for OpenCV DNN
+        blob = cv2.dnn.blobFromImage(img_array, 1.0/255.0, (224, 224), swapRB=True)
         
         # Run inference
         try:
-            ort_inputs = {input_name: img_array}
-            ort_outs = self.ort_session.run(None, ort_inputs)
-            return float(ort_outs[0][0])  # Assuming single output value
+            self.net.setInput(blob)
+            output = self.net.forward()
+            return float(output[0][0])  # Assuming single output value
         except Exception as e:
             print(f"Inference error: {e}")
-            return None
+            # return string version of the error
+            return str(e)
 
     def show_success_message(self, width, height, inference_value=None):
         message = f"Image analyzed successfully: {width}x{height}"
         if inference_value is not None:
-            message += f"\nInference value: {inference_value:.4f}"
+            message += f"\nInference value: {inference_value}"
         self.success_container.content.controls[1].value = message
         self.success_container.visible = True
         self.update()
@@ -215,7 +216,7 @@ class HistoryView(ft.View):
         if os.path.exists(self.history_file):
             df = pd.read_csv(self.history_file)
             for _, row in df.iterrows():
-                inference_text = f"Inference: {row['inference_value']:.4f}" if row['inference_value'] != "N/A" else "No inference"
+                inference_text = f"Inference: {row['inference_value']}" if row['inference_value'] != "N/A" else "No inference"
                 history_items.append(
                     ft.Container(
                         content=ft.Row(
